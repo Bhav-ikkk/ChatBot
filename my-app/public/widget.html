@@ -1,0 +1,219 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>AI Chatbot Widget</title>
+    <style>
+        .chatbot-widget {
+            position: fixed;
+            bottom: 20px;
+            right: 20px;
+            width: 350px;
+            height: 500px;
+            background: white;
+            border-radius: 10px;
+            box-shadow: 0 4px 20px rgba(0,0,0,0.15);
+            display: none;
+            flex-direction: column;
+            z-index: 10000;
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+        }
+
+        .chatbot-toggle {
+            position: fixed;
+            bottom: 20px;
+            right: 20px;
+            width: 60px;
+            height: 60px;
+            background: #1976d2;
+            border-radius: 50%;
+            border: none;
+            color: white;
+            font-size: 24px;
+            cursor: pointer;
+            box-shadow: 0 4px 20px rgba(0,0,0,0.15);
+            z-index: 10001;
+        }
+
+        .chatbot-header {
+            background: #1976d2;
+            color: white;
+            padding: 15px;
+            border-radius: 10px 10px 0 0;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+        }
+
+        .chatbot-messages {
+            flex: 1;
+            padding: 15px;
+            overflow-y: auto;
+            max-height: 350px;
+        }
+
+        .message {
+            margin-bottom: 15px;
+            padding: 10px;
+            border-radius: 10px;
+            max-width: 80%;
+        }
+
+        .message.user {
+            background: #e3f2fd;
+            margin-left: auto;
+            text-align: right;
+        }
+
+        .message.bot {
+            background: #f5f5f5;
+        }
+
+        .chatbot-input {
+            display: flex;
+            padding: 15px;
+            border-top: 1px solid #eee;
+        }
+
+        .chatbot-input input {
+            flex: 1;
+            padding: 10px;
+            border: 1px solid #ddd;
+            border-radius: 20px;
+            outline: none;
+        }
+
+        .chatbot-input button {
+            margin-left: 10px;
+            padding: 10px 15px;
+            background: #1976d2;
+            color: white;
+            border: none;
+            border-radius: 20px;
+            cursor: pointer;
+        }
+
+        .typing-indicator {
+            display: none;
+            padding: 10px;
+            font-style: italic;
+            color: #666;
+        }
+    </style>
+</head>
+<body>
+    <button class="chatbot-toggle" onclick="toggleChatbot()">💬</button>
+    
+    <div class="chatbot-widget" id="chatbot-widget">
+        <div class="chatbot-header">
+            <h3>AI Assistant</h3>
+            <button onclick="toggleChatbot()" style="background: none; border: none; color: white; font-size: 18px; cursor: pointer;">×</button>
+        </div>
+        
+        <div class="chatbot-messages" id="messages">
+            <div class="message bot">
+                Hello! How can I help you today?
+            </div>
+        </div>
+        
+        <div class="typing-indicator" id="typing">
+            AI is typing...
+        </div>
+        
+        <div class="chatbot-input">
+            <input type="text" id="message-input" placeholder="Type your message..." onkeypress="handleKeyPress(event)">
+            <button onclick="sendMessage()">Send</button>
+        </div>
+    </div>
+
+    <script>
+        class ChatbotWidget {
+            constructor(apiKey, apiUrl = 'http://localhost:8000') {
+                this.apiKey = apiKey;
+                this.apiUrl = apiUrl;
+                this.isOpen = false;
+            }
+
+            toggle() {
+                const widget = document.getElementById('chatbot-widget');
+                this.isOpen = !this.isOpen;
+                widget.style.display = this.isOpen ? 'flex' : 'none';
+            }
+
+            async sendMessage(message) {
+                if (!message.trim()) return;
+
+                this.addMessage(message, 'user');
+                this.showTyping();
+
+                try {
+                    const response = await fetch(`${this.apiUrl}/api/chat`, {
+                        method: 'POST',
+                        headers: {
+                            'Content-Type': 'application/json',
+                            'X-API-Key': this.apiKey
+                        },
+                        body: JSON.stringify({
+                            message: message,
+                            model: 'ollama:llama2'
+                        })
+                    });
+
+                    if (response.ok) {
+                        const data = await response.json();
+                        this.addMessage(data.
+                        const data = await response.json();
+                        this.addMessage(data.response, 'bot');
+                    } else {
+                        this.addMessage('Sorry, I encountered an error. Please try again.', 'bot');
+                    }
+                } catch (error) {
+                    this.addMessage('Sorry, I encountered an error. Please try again.', 'bot');
+                } finally {
+                    this.hideTyping();
+                }
+            }
+
+            addMessage(message, sender) {
+                const messagesContainer = document.getElementById('messages');
+                const messageDiv = document.createElement('div');
+                messageDiv.className = `message ${sender}`;
+                messageDiv.textContent = message;
+                messagesContainer.appendChild(messageDiv);
+                messagesContainer.scrollTop = messagesContainer.scrollHeight;
+            }
+
+            showTyping() {
+                document.getElementById('typing').style.display = 'block';
+            }
+
+            hideTyping() {
+                document.getElementById('typing').style.display = 'none';
+            }
+        }
+
+        // Initialize chatbot with API key
+        const chatbot = new ChatbotWidget('YOUR_API_KEY_HERE');
+
+        function toggleChatbot() {
+            chatbot.toggle();
+        }
+
+        function sendMessage() {
+            const input = document.getElementById('message-input');
+            const message = input.value;
+            if (message.trim()) {
+                chatbot.sendMessage(message);
+                input.value = '';
+            }
+        }
+
+        function handleKeyPress(event) {
+            if (event.key === 'Enter') {
+                sendMessage();
+            }
+        }
+    </script>
+</body>
+</html>
