@@ -1,5 +1,5 @@
 # main.py
-from fastapi import FastAPI, HTTPException, Depends, Request
+from fastapi import FastAPI, HTTPException, Depends, Request, Response
 from fastapi.middleware.cors import CORSMiddleware
 from sqlalchemy.orm import Session
 from datetime import datetime
@@ -31,14 +31,13 @@ Base.metadata.create_all(bind=engine)
 
 # --- Client and App Initialization ---
 
-# Initialize Redis from the .env file for flexibility
-redis_url = os.getenv("REDIS_URL", "redis://localhost:6379")
-try:
-    # Use from_url to handle connection strings properly
-    redis_client = redis.from_url(redis_url, decode_responses=True)
-except Exception as e:
-    print(f"Error connecting to Redis: {e}")
-    redis_client = None # Handle case where Redis is not available
+redis_url = os.getenv("REDIS_URL")
+redis_client = None
+if redis_url:
+    try:
+        redis_client = redis.from_url(redis_url, decode_responses=True)
+    except Exception as e:
+        print(f"WARNING: Could not initialize Redis client: {e}")
 
 # Initialize other clients, reading from .env
 ollama_url = os.getenv("OLLAMA_URL", "http://localhost:11434")
@@ -65,10 +64,9 @@ async def lifespan(app: FastAPI):
     print("Starting AI Chatbot API...")
     if redis_client:
         try:
-            # The redis library v5+ uses async for ping
-            if hasattr(redis_client, 'ping') and callable(getattr(redis_client, 'ping')):
-                 if await redis_client.ping():
-                    print("Successfully connected to Redis.")
+            # FIX: Removed 'await' because redis-py's ping is synchronous
+            if redis_client.ping():
+                print("Successfully connected to Redis.")
         except Exception as e:
             print(f"Could not connect to Redis during startup check: {e}")
     yield
@@ -161,57 +159,78 @@ async def delete_api_key(key_id: int, current_user: User = Depends(get_current_u
     return {"message": "API key deleted"}
 
 @app.post("/api/chat")
-async def chat(request: Request, chat_request: ChatRequest, db: Session = Depends(get_db)):
-    api_key = request.headers.get("X-API-Key")
+async def chat(
+    fastapi_request: Request, # Renamed to avoid conflict with our own request object
+    fastapi_response: Response,
+    chat_request: ChatRequest,
+    db: Session = Depends(get_db)
+):
+    api_key = fastapi_request.headers.get("X-API-Key")
     if not api_key:
         raise HTTPException(status_code=401, detail="API key required")
     key_obj = db.query(APIKey).filter(APIKey.key == api_key, APIKey.is_active == True).first()
     if not key_obj:
         raise HTTPException(status_code=401, detail="Invalid API key")
     
-    if not await rate_limiter.check_rate_limit(api_key, key_obj.daily_limit, request.client.host):
-        raise HTTPException(status_code=429, detail="Rate limit exceeded")
+    # FIX: Use the new rate limiter which returns remaining requests
+    is_allowed, remaining_requests = await rate_limiter.check_rate_limit(
+        api_key, key_obj.daily_limit, fastapi_request.client.host
+    )
     
-    response = None
+    # Add the remaining count to the response headers
+    fastapi_response.headers["X-RateLimit-Remaining"] = str(remaining_requests)
+    
+    if not is_allowed:
+        raise HTTPException(status_code=429, detail=f"Rate limit exceeded. Try again tomorrow.")
+    
+    response_text = None
     model_used = "unknown"
     
+    # FIX: Corrected and robust fallback chain: Ollama -> Gemini -> Hugging Face
     try:
-        # Your original model selection and fallback logic
-        if chat_request.model and chat_request.model.startswith("ollama:"):
-            model_name = chat_request.model.replace("ollama:", "")
-            response = await ollama_client.chat(chat_request.message, model_name)
-            model_used = f"ollama:{model_name}"
-        elif chat_request.model and chat_request.model.startswith("gemini:"):
-            if gemini_client.is_available():
-                response = await gemini_client.chat(chat_request.message)
-                model_used = "gemini:pro"
-            else:
-                raise Exception("Gemini not available")
-        else:
+        # 1. Try Ollama first
+        print("Attempting to use primary model: Ollama")
+        response_text = await ollama_client.chat(chat_request.message, "mistral")
+        model_used = "ollama:mistral"
+
+    except Exception as ollama_error:
+        print(f"Ollama failed: {ollama_error}. Falling back to Gemini.")
+        
+        # 2. Try Gemini as the second option
+        if gemini_client.is_available():
             try:
-                response = await ollama_client.chat(chat_request.message, "llama2")
-                model_used = "ollama:llama2"
-            except Exception:
+                print("Attempting to use secondary model: Gemini")
+                response_text = await gemini_client.chat(chat_request.message)
+                model_used = "gemini:pro"
+            except Exception as gemini_error:
+                print(f"Gemini failed: {gemini_error}. Falling back to Hugging Face.")
+                # 3. Fallback to Hugging Face if both Ollama and Gemini fail
                 try:
-                    if gemini_client.is_available():
-                        response = await gemini_client.chat(chat_request.message)
-                        model_used = "gemini:pro"
-                    else:
-                        raise Exception("Gemini not available")
-                except Exception:
-                    response = await hf_client.chat(chat_request.message, chat_request.model)
+                    print("Attempting to use fallback model: Hugging Face")
+                    response_text = await hf_client.chat(chat_request.message) 
                     model_used = "huggingface:default"
-        
-        chat_log = ChatLog(
-            user_id=key_obj.user_id, api_key_id=key_obj.id, message=chat_request.message,
-            response=response, model=model_used, ip_address=request.client.host
-        )
-        db.add(chat_log)
-        db.commit()
-        
-        return {"response": response, "model": model_used}
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Chat error: {str(e)}")
+                except Exception as hf_error:
+                    print(f"Hugging Face fallback also failed: {hf_error}")
+                    raise HTTPException(status_code=503, detail="All AI services are currently unavailable.")
+        else:
+             # 3. Fallback to Hugging Face if Gemini is not configured
+            try:
+                print("Gemini not available. Falling back to Hugging Face.")
+                response_text = await hf_client.chat(chat_request.message) 
+                model_used = "huggingface:default"
+            except Exception as hf_error:
+                print(f"Hugging Face fallback also failed: {hf_error}")
+                raise HTTPException(status_code=503, detail="All AI services are currently unavailable.")
+
+    # Log the successful chat
+    chat_log = ChatLog(
+        user_id=key_obj.user_id, api_key_id=key_obj.id, message=chat_request.message,
+        response=response_text, model=model_used, ip_address=fastapi_request.client.host
+    )
+    db.add(chat_log)
+    db.commit()
+    
+    return {"response": response_text, "model": model_used}
 
 # ... (The rest of your routes: /plans, /subscribe, /admin/*) ...
 # The code for these routes is correct and can remain as you had it.

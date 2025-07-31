@@ -1,4 +1,4 @@
-# database.py
+# backend/database.py
 import os
 from dotenv import load_dotenv
 from sqlalchemy import create_engine
@@ -11,13 +11,18 @@ load_dotenv()
 DATABASE_URL = os.getenv("DATABASE_URL")
 
 if not DATABASE_URL:
-    raise ValueError("DATABASE_URL environment variable is not set")
+    raise ValueError("FATAL ERROR: DATABASE_URL environment variable is not set. Please check your .env file.")
 
-engine = create_engine(DATABASE_URL)
+# FIX: Added pool_pre_ping=True to handle database connection timeouts
+# This is crucial for serverless/cloud databases like NeonDB.
+engine = create_engine(
+    DATABASE_URL,
+    pool_pre_ping=True
+)
 
 SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
 
-# Base class for declarative models
+# Base class for declarative models that all models will inherit from.
 Base = declarative_base()
 
 def get_db():

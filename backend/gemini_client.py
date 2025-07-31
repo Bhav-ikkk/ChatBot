@@ -4,19 +4,28 @@ from typing import Optional
 
 class GeminiClient:
     def __init__(self):
+        self.model = None # Initialize as None first
         api_key = os.getenv("GEMINI_API_KEY")
         if api_key:
-            genai.configure(api_key=api_key)
-            self.model = genai.GenerativeModel('gemini-pro')
+            try:
+                genai.configure(api_key=api_key)
+                self.model = genai.GenerativeModel('gemini-1.5-flash')
+                print("GeminiClient initialized successfully.")
+            except Exception as e:
+                print(f"Failed to initialize GeminiClient: {e}")
         else:
-            self.model = None
+            print("GeminiClient: GEMINI_API_KEY not found in .env file.")
     
     async def chat(self, message: str, model_name: Optional[str] = None) -> str:
         if not self.model:
-            raise Exception("Gemini API key not configured")
+            raise Exception("Gemini API key not configured or initialization failed")
         
         try:
-            response = self.model.generate_content(message)
+            # The new SDK uses generate_content_async for async operations
+            if hasattr(self.model, 'generate_content_async'):
+                 response = await self.model.generate_content_async(message)
+            else:
+                 response = self.model.generate_content(message)
             return response.text
         except Exception as e:
             raise Exception(f"Gemini error: {str(e)}")
